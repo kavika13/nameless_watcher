@@ -61,7 +61,7 @@ internal void Win32GetExecutableFileName(Win32State* state) {
     }
 }
 
-internal int GetStringLength(char* string) {
+internal int GetStringLength_(char* string) {
     Assert(string != NULL);
     int result = 0;
 
@@ -72,7 +72,7 @@ internal int GetStringLength(char* string) {
     return result;
 }
 
-internal void ConcatStrings(
+internal void ConcatStrings_(
         size_t source_a_count, char* source_a,
         size_t source_b_count, char* source_b,
         size_t dest_count, char* dest) {
@@ -90,9 +90,9 @@ internal void ConcatStrings(
 }
 
 internal void Win32BuildExecutablePathFileName(Win32State* state, char* filename, int dest_count, char* dest) {
-    ConcatStrings(
+    ConcatStrings_(
         state->one_past_last_executable_filename_slash - state->executable_filename, state->executable_filename,
-        GetStringLength(filename), filename,
+        GetStringLength_(filename), filename,
         dest_count, dest);
 }
 
@@ -221,7 +221,7 @@ internal void Win32DisplayBufferInWindow(
         buffer->memory, &buffer->info, DIB_RGB_COLORS, SRCCOPY);
 }
 
-internal void ToggleFullscreen(HWND window) {
+internal void Win32ToggleFullscreen(HWND window) {
     // See: http://blogs.msdn.com/b/oldnewthing/archive/2010/04/12/9994016.aspx
     DWORD style = GetWindowLong(window, GWL_STYLE);
 
@@ -314,7 +314,7 @@ internal void Win32ProcessPendingMessages() {
                         }
 
                         if(vk_code == VK_RETURN && alt_key_is_down && message.hwnd) {
-                            ToggleFullscreen(message.hwnd);
+                            Win32ToggleFullscreen(message.hwnd);
                         }
                     }
                 }
