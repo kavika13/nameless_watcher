@@ -1,18 +1,29 @@
 #include <windows.h>
-#include <stdint.h>
 
-#define internal static
-#define local_persist static
-#define global_variable static
+#include "watcher_platform.h"
 
-typedef int32_t bool32;
-typedef float float32;
+typedef void GameUpdateAndRenderFunc(GameOffscreenBuffer* buffer);
+typedef void GameGetSoundSamplesFunc();
 
-#if NAMELESS_WATCHER_SLOW
-#define Assert(expression) if(!(expression)) {*(int *)0 = 0;}
-#else
-#define Assert(expression)
-#endif
+#define WIN32_STATE_FILE_NAME_COUNT MAX_PATH
+struct Win32State {
+    uint64_t total_size;
+    void* game_memory_block;
+
+    char executable_filename[WIN32_STATE_FILE_NAME_COUNT];
+    char* one_past_last_executable_filename_slash;
+};
+
+struct Win32GameCode {
+    HMODULE game_code_dll;
+    FILETIME dll_last_write_time;
+
+    // Note: Can be null, must check before calling
+    GameUpdateAndRenderFunc* update_and_render;
+    GameGetSoundSamplesFunc* get_sound_samples;
+
+    bool32 is_valid;
+};
 
 struct Win32OffscreenBuffer {
     BITMAPINFO info;
@@ -37,6 +48,108 @@ extern "C" {
     _declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;  // Enable nVidia GPU selection system
 }
 
+internal void Win32GetExecutableFileName(Win32State* state) {
+    DWORD size_of_filename = GetModuleFileNameA(0, state->executable_filename, sizeof(state->executable_filename));
+    state->one_past_last_executable_filename_slash = state->executable_filename;
+
+    // TODO: Error handling of size_of_filename == 0?
+
+    for(char *scan_index = state->executable_filename; *scan_index; ++scan_index) {
+        if(*scan_index == '\\') {
+            state->one_past_last_executable_filename_slash = scan_index + 1;
+        }
+    }
+}
+
+internal int GetStringLength(char* string) {
+    Assert(string != NULL);
+    int result = 0;
+
+    while(*string++) {
+        ++result;
+    }
+
+    return result;
+}
+
+internal void ConcatStrings(
+        size_t source_a_count, char* source_a,
+        size_t source_b_count, char* source_b,
+        size_t dest_count, char* dest) {
+    Assert(dest_count >= source_a_count + source_b_count + 1);
+
+    for(int index = 0; index < source_a_count; ++index) {
+        *dest++ = *source_a++;
+    }
+
+    for(int index = 0; index < source_b_count; ++index) {
+        *dest++ = *source_b++;
+    }
+
+    *dest++ = 0;
+}
+
+internal void Win32BuildExecutablePathFileName(Win32State* state, char* filename, int dest_count, char* dest) {
+    ConcatStrings(
+        state->one_past_last_executable_filename_slash - state->executable_filename, state->executable_filename,
+        GetStringLength(filename), filename,
+        dest_count, dest);
+}
+
+inline FILETIME Win32GetLastWriteTime(char* filename) {
+    FILETIME result = {};
+    WIN32_FILE_ATTRIBUTE_DATA data;
+
+    if(GetFileAttributesEx(filename, GetFileExInfoStandard, &data)) {
+        result = data.ftLastWriteTime;
+    }
+
+    return result;
+}
+
+internal Win32GameCode Win32LoadGameCode(char* source_dll_filename, char* temp_dll_filename, char* lock_filename) {
+    Win32GameCode result = {};
+    WIN32_FILE_ATTRIBUTE_DATA ignored_;
+
+    if(!GetFileAttributesEx(lock_filename, GetFileExInfoStandard, &ignored_)) {
+        result.dll_last_write_time = Win32GetLastWriteTime(source_dll_filename);
+
+        CopyFile(source_dll_filename, temp_dll_filename, FALSE);
+
+        result.game_code_dll = LoadLibraryA(temp_dll_filename);
+
+        if(result.game_code_dll) {
+            result.update_and_render = reinterpret_cast<GameUpdateAndRenderFunc*>(
+                GetProcAddress(result.game_code_dll, "GameUpdateAndRender"));
+
+            result.get_sound_samples = reinterpret_cast<GameGetSoundSamplesFunc*>(
+                GetProcAddress(result.game_code_dll, "GameGetSoundSamples"));
+
+            result.is_valid = result.update_and_render && result.get_sound_samples;
+        }
+    }
+
+    if(!result.is_valid) {
+        result.update_and_render = 0;
+        result.get_sound_samples = 0;
+    }
+
+    return result;
+}
+
+internal void Win32UnloadGameCode(Win32GameCode* game_code) {
+    Assert(game_code != NULL);
+
+    if(game_code->game_code_dll) {
+        FreeLibrary(game_code->game_code_dll);
+        game_code->game_code_dll = 0;
+    }
+
+    game_code->is_valid = false;
+    game_code->update_and_render = 0;
+    game_code->get_sound_samples = 0;
+}
+
 Win32WindowDimension Win32GetWindowDimension(HWND window) {
     Win32WindowDimension result;
 
@@ -46,20 +159,6 @@ Win32WindowDimension Win32GetWindowDimension(HWND window) {
     result.height = client_rect.bottom - client_rect.top;
 
     return result;
-}
-
-internal void RenderWeirdGradient(Win32OffscreenBuffer buffer, int x_offset, int y_offset) {
-    uint8_t* row = static_cast<uint8_t*>(buffer.memory);
-
-    for(int y = 0; y < buffer.height; ++y) {
-        uint32_t* pixel = reinterpret_cast<uint32_t*>(row);
-
-        for(int x = 0; x < buffer.width; ++x) {
-            *pixel++ = ((x + x_offset) << 8) | (y + y_offset);
-        }
-
-        row += buffer.pitch;
-    }
 }
 
 internal void Win32ResizeDibSection(Win32OffscreenBuffer* buffer, int width, int height) {
@@ -282,6 +381,22 @@ internal LRESULT CALLBACK Win32MainWindowCallback(HWND window, UINT message, WPA
 }
 
 int CALLBACK WinMain(HINSTANCE instance, HINSTANCE _unused, LPSTR command_line, int show_code) {
+    Win32State win32_state = {};
+
+    Win32GetExecutableFileName(&win32_state);
+
+    char source_game_code_dll_full_path[WIN32_STATE_FILE_NAME_COUNT];
+    Win32BuildExecutablePathFileName(
+        &win32_state, "watcher.dll", sizeof(source_game_code_dll_full_path), source_game_code_dll_full_path);
+
+    char temp_game_code_dll_full_path[WIN32_STATE_FILE_NAME_COUNT];
+    Win32BuildExecutablePathFileName(
+        &win32_state, "watcher_temp.dll", sizeof(temp_game_code_dll_full_path), temp_game_code_dll_full_path);
+
+    char game_code_lock_full_path[WIN32_STATE_FILE_NAME_COUNT];
+    Win32BuildExecutablePathFileName(
+        &win32_state, "lock.tmp", sizeof(game_code_lock_full_path), game_code_lock_full_path);
+
     WNDCLASS window_class = {};
 
     Win32ResizeDibSection(&g_back_buffer, 960, 540);
@@ -308,21 +423,36 @@ int CALLBACK WinMain(HINSTANCE instance, HINSTANCE _unused, LPSTR command_line, 
     }
 
     g_is_running = true;
-    int x_offset = 0;
-    int y_offset = 0;
+
+    Win32GameCode game = Win32LoadGameCode(
+        source_game_code_dll_full_path, temp_game_code_dll_full_path, game_code_lock_full_path);
 
     while(g_is_running) {
+        FILETIME new_dll_write_time = Win32GetLastWriteTime(source_game_code_dll_full_path);
+
+        if(CompareFileTime(&new_dll_write_time, &game.dll_last_write_time) != 0) {
+            Win32UnloadGameCode(&game);
+            game = Win32LoadGameCode(
+                source_game_code_dll_full_path, temp_game_code_dll_full_path, game_code_lock_full_path);
+        }
+
         Win32ProcessPendingMessages();
 
-        RenderWeirdGradient(g_back_buffer, x_offset, y_offset);
+        GameOffscreenBuffer buffer = {};
+        buffer.memory = g_back_buffer.memory;
+        buffer.width = g_back_buffer.width; 
+        buffer.height = g_back_buffer.height;
+        buffer.pitch = g_back_buffer.pitch;
+        buffer.bytes_per_pixel = g_back_buffer.bytes_per_pixel;
+
+        if(game.update_and_render) {
+            game.update_and_render(&buffer);
+        }
 
         HDC device_context = GetDC(window);
         Win32WindowDimension dimension = Win32GetWindowDimension(window);
         Win32DisplayBufferInWindow(&g_back_buffer, device_context, dimension.width, dimension.height);
         ReleaseDC(window, device_context);
-
-        ++x_offset;
-        ++y_offset;
     }
 
     return 0;
