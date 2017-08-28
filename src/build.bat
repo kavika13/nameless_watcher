@@ -12,7 +12,7 @@ PUSHD ..\build
 DEL *.pdb > NUL 2> NUL
 
 REM 32-bit build
-REM cl %CommonCompilerFlags% ..\src\win32_entrypoint.cpp /link -subsystem:windows,5.1 %CommonLinkerFlags%
+REM cl %CommonCompilerFlags% ..\src\win32_watcher.cpp /link -subsystem:windows,5.1 %CommonLinkerFlags%
 
 REM 64-bit build
 REM Optimization switches /wO2
@@ -20,5 +20,5 @@ ECHO WAITING FOR PDB > lock.tmp
 cl %CommonCompilerFlags% -Fewatcher.dll ..\src\main.cpp -Fmwatcher.map -LD /link -incremental:no -opt:ref -PDB:watcher_%random%.pdb -EXPORT:GameGetSoundSamples -EXPORT:GameUpdateAndRender
 SET LastError=%ERRORLEVEL%
 DEL lock.tmp
-cl %CommonCompilerFlags% -Fewin32_watcher.exe ..\src\win32_entrypoint.cpp -Fmwin32_watcher.map /link %CommonLinkerFlags%
+cl %CommonCompilerFlags% -Fewin32_watcher.exe ..\src\win32_watcher.cpp -Fmwin32_watcher.map /link %CommonLinkerFlags%
 POPD
