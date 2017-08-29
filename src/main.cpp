@@ -18,9 +18,50 @@ internal void RenderWeirdGradient(GameOffscreenBuffer* buffer, int x_offset, int
     }
 }
 
-void GameUpdateAndRender(GameOffscreenBuffer* buffer) {
-    ++g_x_offset;
-    ++g_y_offset;
+void GameUpdateAndRender(GameInput* input, GameOffscreenBuffer* buffer) {
+    bool is_up_pressed = false;
+    bool is_down_pressed = false;
+    bool is_left_pressed = false;
+    bool is_right_pressed = false;
+
+    for(int i = 0; i < NUM_SUPPORTED_CONTROLLERS; ++i) {
+        GameControllerInput* controller = GetController(input, i);
+
+        if(controller->is_connected) {
+            if(controller->move_up.ended_down) {
+                is_up_pressed = true;
+            }
+
+            if(controller->move_down.ended_down) {
+                is_down_pressed = true;
+            }
+
+            if(controller->move_left.ended_down) {
+                is_left_pressed = true;
+            }
+
+            if(controller->move_right.ended_down) {
+                is_right_pressed = true;
+            }
+        }
+    }
+
+    if(is_up_pressed) {
+        --g_y_offset;
+    }
+
+    if(is_down_pressed) {
+        ++g_y_offset;
+    }
+
+    if(is_left_pressed) {
+        --g_x_offset;
+    }
+
+    if(is_right_pressed) {
+        ++g_x_offset;
+    }
+
     RenderWeirdGradient(buffer, g_x_offset, g_y_offset);
 }
 
